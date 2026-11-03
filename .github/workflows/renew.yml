@@ -124,6 +124,12 @@ jobs:
           echo "状态文件：${{ env.STATE_FILE }}"
           echo "### 账号4 本次：演练=${{ inputs.dry || '否' }}" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: 检查 CODE_REPO 变量
+        run: |
+          if [ -z "${{ vars.CODE_REPO }}" ]; then
+            echo "::error::本库没配仓库变量 CODE_REPO（应为 YYluck06/alishushu-renew-core），否则拉不到私有代码"; exit 1
+          fi
+
       - name: 拉取私有代码库
         uses: actions/checkout@v4
         with:
