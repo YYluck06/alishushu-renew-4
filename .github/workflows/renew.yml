@@ -4,16 +4,21 @@ name: 阿里叔叔续期 · 账号4
 # 这个公开库只负责【账号4】：自己的 secrets、自己的代理节点、自己的 cron。
 # 代码在私有库（vars.CODE_REPO），运行时 checkout 到 app/ 执行；公开库里没有任何账号代码。
 #
+# 每天做的事：登录（会话长期复用）→ 给每台实例点「延长 72 小时」（免费、不限次数）
+#             → 回写指纹/会话 → TG 通知。只有把 ACTION 改成 renew 才会走花钱的「续费」。
+#
 # 定时：15 2 * * *（UTC）＝ 北京时间 10:15
 # 每个库的 cron 故意错开 25 分钟，避免四个库同一秒去抢同一个站点 / 同一条出口。
 #
 # ── 需要在【本库】Settings → Secrets and variables → Actions 里配 ──
 # Variables:
 #   CODE_REPO         = 用户名/alishushu-renew-core        （私有代码库，必填）
-#   INSTANCE          = （可选）只续名称或 ID 含该子串的实例，多实例时用
-#   RENEW_MONTHS      = （可选）续几个月，默认 1
-#   SKIP_IF_DAYS_GT   = （可选）剩余天数大于它就跳过，默认 30（防止一天续两次）
-#   MAX_COST          = （可选）报价上限，默认 0（超过就中止，绝不多花钱）
+#   ACTION            = （可选）delay（默认，免费点「延长 72 小时」）/ renew（花钱续费）
+#   EXTEND_CLICKS     = （可选）每台实例点几次延长，默认 1
+#   INSTANCE          = （可选）只处理名称或 ID 含该子串的实例，多实例时用
+#   RENEW_MONTHS      = （可选）ACTION=renew 时续几个月，默认 1
+#   SKIP_IF_DAYS_GT   = （可选）ACTION=renew 时剩余天数大于它就跳过，默认 30
+#   MAX_COST          = （可选）ACTION=renew 时报价上限，默认 0（超过就中止，绝不多花钱）
 # Secrets:
 #   CODE_REPO_TOKEN   = 私有库的细粒度 PAT（Contents: Read and write，要能回写会话状态）
 #   ACC_EMAIL         = 账号4 的登录邮箱
@@ -34,7 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       dry:
-        description: '演练：只报价、不点确认'
+        description: '演练：只读不点（不提交延长/续期）'
         type: boolean
         default: false
       selftest:
@@ -45,8 +50,11 @@ on:
         description: '只跑校准（登录后把控制台结构扒下来存 artifact）'
         type: boolean
         default: false
+      clicks:
+        description: '（可选）每台实例点几次「延长 72 小时」，默认 1'
+        required: false
       instance:
-        description: '只续这个实例（名称或 ID 含该字符串）'
+        description: '（可选）只处理这个实例（名称或 ID 含该字符串）'
         required: false
 
 concurrency:
@@ -93,7 +101,7 @@ jobs:
           SB_BIN: /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box
         run: node scripts/selftest-proxy.mjs
 
-  # ── 1) 主流程：会话复用 → 登录（必要时）→ 续期 → 回写状态 → TG 通知 ──
+  # ── 1) 主流程：会话复用 → 登录（必要时）→ 点「延长 72 小时」/ 续期 → 回写状态 → TG ──
   renew:
     if: ${{ !inputs.selftest }}
     runs-on: ubuntu-latest
@@ -106,6 +114,8 @@ jobs:
       STATE_FILE: 'state/acc4.json'
       PROXY_NODE: ${{ secrets.PROXY_NODE }}
       PROXY_SRC: ${{ secrets.PROXY_NODE && 'Secrets.PROXY_NODE' || '未配置（直连）' }}
+      ACTION: ${{ vars.ACTION || 'delay' }}
+      EXTEND_CLICKS: ${{ inputs.clicks || vars.EXTEND_CLICKS || '1' }}
       INSTANCE: ${{ inputs.instance || vars.INSTANCE }}
       RENEW_MONTHS: ${{ vars.RENEW_MONTHS || '1' }}
       SKIP_IF_DAYS_GT: ${{ vars.SKIP_IF_DAYS_GT || '30' }}
@@ -119,10 +129,11 @@ jobs:
           E: ${{ secrets.ACC_EMAIL }}
           P: ${{ secrets.PROXY_NODE }}
         run: |
-          echo "账号邮箱已配：${E:+yes}${E:-NO}"
+          echo "账号已配：${E:+yes}${E:-NO}"
           echo "代理节点长度：${#P}（0 = 直连）"
           echo "状态文件：${{ env.STATE_FILE }}"
-          echo "### 账号4 本次：演练=${{ inputs.dry || '否' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "动作：${{ env.ACTION }}（delay=免费延长 72 小时 / renew=花钱续费）"
+          echo "### 账号4 本次：动作=${{ env.ACTION }} 演练=${{ inputs.dry || '否' }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 检查 CODE_REPO 变量
         run: |
@@ -163,7 +174,7 @@ jobs:
         working-directory: app
         run: node scripts/discover.mjs
 
-      - name: 续期
+      - name: 延长/续期
         if: ${{ !inputs.discover }}
         working-directory: app
         run: node scripts/run-account.mjs
@@ -189,7 +200,7 @@ jobs:
       - name: 失败告警
         if: failure()
         working-directory: app
-        run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号4 的续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
+        run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号4 的延长/续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
 
   # ── 2) 仓库保活：GitHub 会停用 60 天没活动的仓库的 cron ──
   keepalive:
