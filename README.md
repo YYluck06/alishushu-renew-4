@@ -32,6 +32,10 @@ Settings → Secrets and variables → Actions
 | `EXTEND_CLICKS` | `1` | 每台实例点几次延长 |
 | `EXTEND_KEEP_HOURS` | `48` | 剩余延长期低于这么多小时才点下一次 |
 | `INSTANCE` | — | 只处理名称含该子串的实例 |
+| `FREE_RES` | `1` | 每轮顺手把**号段 / 数据盘**的免费月份续到上限（0 关掉） |
+| `FREE_PAID` | `0` | 允许花钱续号段/数据盘（默认一分钱不花） |
+| `FREE_PAID_DAYS` | `7` | 付费资源只在距到期这么多天内才续 |
+| `PORT_BLOCK_MONTHS` / `DISK_MONTHS` | `0` | 单次最多续几个月，0 = 只受服务端预付上限约束 |
 | `RENEW_MONTHS` | `1` | 仅 `ACTION=renew` |
 | `SKIP_IF_DAYS_GT` | `30` | 仅 `ACTION=renew` |
 | `MAX_COST` | `0` | 仅 `ACTION=renew`，0 = 只要要钱就中止 |
@@ -57,6 +61,22 @@ Actions → 本 workflow → Run workflow：
 | `force` | 勾上 = 忽略「到期窗口 / 触发线」强制点（排障用） |
 | `dry_run` | 勾上 = 只体检不动手 |
 | `clicks` | 每台点几次，留空用 `EXTEND_CLICKS` |
+
+## 号段 / 数据盘的免费月份（每轮顺手做）
+
+除了点「延长 72 小时」，每轮还会检查两样**和实例到期无关**的东西：
+
+| 资源 | 接口 | 说明 |
+| --- | --- | --- |
+| 公网端口号段 | `GET/POST /console/port-blocks` | 号段一过期，那几十个端口就不归你了，重建后端口会乱跳 |
+| 数据盘 | `GET/POST /console/disks` | 数据盘过期会被删，里面有数据就麻烦 |
+
+规则（照抄参考项目的做法，实测有效）：
+
+- `renew-terms` 里的 `totals` 是**累进价目表**，从头数连续的 0 就是「白续的月数」（实测号段前 10 个月是 0，10GB 数据盘前 11 个月是 0）
+- 服务端还卡了一个**预付上限** `can_renew`（实测 2），所以一次续 `min(免费月数, can_renew)` 个月，能续就续到上限附近
+- **要钱的绝对不自动续**（`FREE_PAID=0`）：静默扣款比资源过期更难查，报告里会写明「续费要 X/月，跳过」
+- 自动附赠、没有 `paid_until` 的号段没有续费入口（接口 404），报告里标注「正常」，不算失败
 
 ## 两个按钮别搞混
 

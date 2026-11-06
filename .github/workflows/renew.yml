@@ -41,6 +41,10 @@
 #   EXTEND_KEEP_HOURS 剩余延长期低于这么多小时才点下一次，默认 48
 #   INSTANCE          只处理名称含该子串的实例
 #   RENEW_MONTHS / SKIP_IF_DAYS_GT / MAX_COST   仅 ACTION=renew 用
+#   FREE_RES          1（默认，每轮把号段/数据盘的免费月份续到上限）/ 0 关掉
+#   FREE_PAID         1 = 允许花钱续号段/数据盘（默认 0，一分钱都不花）
+#   FREE_PAID_DAYS    付费资源只在距到期这么多天内才续，默认 7
+#   PORT_BLOCK_MONTHS / DISK_MONTHS   单次最多续几个月，默认 0 = 只受服务端上限约束
 # =============================================================================
 
 name: 🌐 阿里叔叔自动延长 ④          # 复制后改成下一个序号
@@ -103,6 +107,12 @@ jobs:
       MAX_COST: ${{ vars.MAX_COST || '0' }}
       DRY: ${{ inputs.dry_run && '1' || '' }}
       FORCE: ${{ inputs.force && '1' || '' }}
+      # ── 号段 / 数据盘的免费续期（每轮顺手做）──────────────────────────
+      FREE_RES: ${{ vars.FREE_RES || '1' }}
+      FREE_PAID: ${{ vars.FREE_PAID || '0' }}
+      FREE_PAID_DAYS: ${{ vars.FREE_PAID_DAYS || '7' }}
+      PORT_BLOCK_MONTHS: ${{ vars.PORT_BLOCK_MONTHS || '0' }}
+      DISK_MONTHS: ${{ vars.DISK_MONTHS || '0' }}
       # ── 通知 / 代理 ─────────────────────────────────────────────────
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
@@ -219,6 +229,7 @@ jobs:
           fi
           echo "运行：$CMD"
           echo "动作：${ACTION}（delay=免费延长 72 小时 / renew=花钱续费） 演练=${DRY:-否} 触发线=${EXTEND_KEEP_HOURS}h 点击=${EXTEND_CLICKS}"
+          echo "免费资源：号段/数据盘 FREE_RES=${FREE_RES:-1} 允许花钱=${FREE_PAID:-0} 单次上限=${PORT_BLOCK_MONTHS:-0}/${DISK_MONTHS:-0} 月"
           echo "### 账号4 本次：动作=${ACTION} 演练=${DRY:-否}" >> "$GITHUB_STEP_SUMMARY"
 
           # 不要用 node ... | tee log：管道里 $! 是 tee 的 PID，退出码永远是 0。
