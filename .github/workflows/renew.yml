@@ -1,219 +1,314 @@
-name: 阿里叔叔续期 · 账号4
+# =============================================================================
+# 阿里叔叔面板 · 自动延长 72 小时 —— 一个账号一份 workflow
+# -----------------------------------------------------------------------------
+# 公开仓库只放这个 workflow + acc/N/time.txt，账号代码在私有库
+# （vars.CODE_REPO = 用户名/alishushu-renew-core），运行时用 CODE_REPO_TOKEN
+# 检出到 alishushu-core/ 子目录再跑。私有库里不含任何 workflow —— 定时任务只在这里。
+#
+# 多账号就复制这个文件，然后改 5 处（搜 ①②③④⑤ 逐个过一遍）：
+#   ①  name:        🌐 阿里叔叔自动延长 ①        → ②
+#   ②  cron:        '15 2 * * *'                 → 错开（见 on.schedule 的注释）
+#   ③  ACC_EMAIL:   secrets.ACC_EMAIL             → secrets.ACC_EMAIL_2
+#   ④  ACC_PASS:    secrets.ACC_PASS              → secrets.ACC_PASS_2
+#   ⑤  STATE_FILE:  state/acc4.json              → state/acc2.json
+#      TIME_DIR:    acc/4                         → acc/2
+#   concurrency 不用改：用的是 ${{ github.workflow }}，每个文件天然互斥。
+#   TG 和 CODE_REPO / CODE_REPO_TOKEN 各账号共用，不用复制。
+#
+# 每天做的事：复用存档会话（登录一次，指纹不变）→ 给每台实例点「延长 72 小时」
+#   （免费、次数不限，点一次 = 从现在起再运行 72 小时）→ 回写指纹/会话 → TG 报告。
+#   只有把 phase 选成 renew / 把 ACTION 变量设成 renew，才走花钱的「续费」。
+#
+# 触发线：剩余延长期 < EXTEND_KEEP_HOURS（默认 48）小时才点下一次。
+#   每天跑一次 + 48 小时触发线 = 实际两天点一次，点得越稀越不像脚本。
+#
+# -----------------------------------------------------------------------------
+# Secrets（本库 → Settings → Secrets and variables → Actions）
+#   CODE_REPO_TOKEN  读私有库的 token（Contents: Read and write —— 要能回写会话状态）
+#   ACC_EMAIL / ACC_PASS   账号4 的账号密码（用户名或邮箱都行）
+#   ACC_SEED         （可选）指纹种子；留空用账号派生，同一账号永远同一指纹
+#   PROXY_NODE       本库专属出口，例如
+#                      socks5://host:port                     socks5 无认证
+#                      socks5://user:pass@host:port           socks5 带用户名密码
+#                      hy2://pass@host:443?sni=x&insecure=1   hysteria2
+#                      vmess:// vless:// trojan:// tuic:// ss://
+#                    留空 = 直连（站点看到 runner IP，不建议）
+#   TG_TOKEN / TG_CHAT   Telegram 报告
+# Variables（可选，本库）
+#   CODE_REPO         用户名/alishushu-renew-core（必填，不配就拉不到私有库）
+#   ACTION            delay（默认，免费延长）/ renew（花钱续费）
+#   EXTEND_CLICKS     每台实例点几次延长，默认 1
+#   EXTEND_KEEP_HOURS 剩余延长期低于这么多小时才点下一次，默认 48
+#   INSTANCE          只处理名称含该子串的实例
+#   RENEW_MONTHS / SKIP_IF_DAYS_GT / MAX_COST   仅 ACTION=renew 用
+# =============================================================================
 
-# ============================================================
-# 这个公开库只负责【账号4】：自己的 secrets、自己的代理节点、自己的 cron。
-# 代码在私有库（vars.CODE_REPO），运行时 checkout 到 app/ 执行；公开库里没有任何账号代码。
-#
-# 每天做的事：登录（会话长期复用）→ 给每台实例点「延长 72 小时」（免费、不限次数）
-#             → 回写指纹/会话 → TG 通知。只有把 ACTION 改成 renew 才会走花钱的「续费」。
-#
-# 定时：15 2 * * *（UTC）＝ 北京时间 10:15
-# 每个库的 cron 故意错开 25 分钟，避免四个库同一秒去抢同一个站点 / 同一条出口。
-#
-# ── 需要在【本库】Settings → Secrets and variables → Actions 里配 ──
-# Variables:
-#   CODE_REPO         = 用户名/alishushu-renew-core        （私有代码库，必填）
-#   ACTION            = （可选）delay（默认，免费点「延长 72 小时」）/ renew（花钱续费）
-#   EXTEND_CLICKS     = （可选）每台实例点几次延长，默认 1
-#   INSTANCE          = （可选）只处理名称或 ID 含该子串的实例，多实例时用
-#   RENEW_MONTHS      = （可选）ACTION=renew 时续几个月，默认 1
-#   SKIP_IF_DAYS_GT   = （可选）ACTION=renew 时剩余天数大于它就跳过，默认 30
-#   MAX_COST          = （可选）ACTION=renew 时报价上限，默认 0（超过就中止，绝不多花钱）
-# Secrets:
-#   CODE_REPO_TOKEN   = 私有库的细粒度 PAT（Contents: Read and write，要能回写会话状态）
-#   ACC_EMAIL         = 账号4 的登录邮箱
-#   ACC_PASS          = 账号4 的密码
-#   ACC_SEED          = （可选）指纹种子；留空则用邮箱派生，同一账号永远同一指纹
-#   PROXY_NODE        = 本库专用的代理出口，例如：
-#                          socks5://1.2.3.4:1080                  （socks5 无认证）
-#                          socks5://user:pass@1.2.3.4:1080        （socks5 带用户名密码）
-#                          hy2://pass@host:443?sni=xx&insecure=1  （hysteria2 / hy2）
-#                          vmess://… / vless://… / trojan://… / tuic://… / ss://…
-#                        留空 = 直连（站点看到 runner IP，不建议）
-#   TG_TOKEN / TG_CHAT = Telegram 通知（四个库用同一个 bot 即可）
-# ============================================================
+name: 🌐 阿里叔叔自动延长 ④          # 复制后改成下一个序号
 
 on:
   schedule:
+    # ② 每个账号错开，别挤在同一分钟。cron 用 UTC，+8 才是北京时间，
+    #    也避开整点，减少和其它任务撞车。当前：15 2 * * * = 北京 10:15
     - cron: '15 2 * * *'
   workflow_dispatch:
     inputs:
-      dry:
-        description: '演练：只读不点（不提交延长/续期）'
+      phase:
+        description: "阶段"
+        type: choice
+        options: [auto, delay, renew, selftest, discover]
+        default: auto
+      force:
+        description: "忽略到期/触发线检查，强制点延长"
         type: boolean
         default: false
-      selftest:
-        description: '只跑代理隔离自测（假节点，不碰账号）'
-        type: boolean
-        default: false
-      discover:
-        description: '只跑校准（登录后把控制台结构扒下来存 artifact）'
+      dry_run:
+        description: "只体检，不动手"
         type: boolean
         default: false
       clicks:
-        description: '（可选）每台实例点几次「延长 72 小时」，默认 1'
-        required: false
-      instance:
-        description: '（可选）只处理这个实例（名称或 ID 含该字符串）'
+        description: "（可选）每台实例点几次延长，留空用 EXTEND_CLICKS"
         required: false
 
-concurrency:
-  group: alishushu-acc4
-  cancel-in-progress: false
-
-# 会话状态回写到私有库（用 CODE_REPO_TOKEN），本库自身只需要读权限 + 保活要写
 permissions:
-  contents: write
+  contents: write     # 最后要提交 time.txt 保活
+  actions: write      # 清理旧运行记录
 
 jobs:
-  # ── 0) 代理隔离自测：4 个假节点（socks5 无认证 / socks5 带认证 / hysteria2 / vmess-ws） ──
-  proxy-selftest:
-    if: ${{ inputs.selftest }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: 检查 CODE_REPO 变量
-        run: |
-          if [ -z "${{ vars.CODE_REPO }}" ]; then
-            echo "::error::没配仓库变量 CODE_REPO（应为 用户名/alishushu-renew-core）"; exit 1
-          fi
-      - name: 拉取私有代码库
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ vars.CODE_REPO }}
-          token: ${{ secrets.CODE_REPO_TOKEN }}
-          path: app
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: 下载 sing-box v1.13.14
-        run: |
-          mkdir -p /tmp/sb
-          curl -fL --retry 3 --connect-timeout 15 -o /tmp/sb/sb.tgz \
-            https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz
-          tar -xzf /tmp/sb/sb.tgz -C /tmp/sb
-          chmod +x /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box
-          /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box version | head -1
-      - name: 跑假节点自测
-        working-directory: app
-        env:
-          SB_BIN: /tmp/sb/sing-box-1.13.14-linux-amd64/sing-box
-        run: node scripts/selftest-proxy.mjs
-
-  # ── 1) 主流程：会话复用 → 登录（必要时）→ 点「延长 72 小时」/ 续期 → 回写状态 → TG ──
   renew:
-    if: ${{ !inputs.selftest }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
+    runs-on: ubuntu-24.04
+    # 单账号约 3~5 分钟（装 Chromium 占大头），加代理启动与重试，45 分钟够用。
+    timeout-minutes: 45
+    concurrency:
+      # 用 workflow 名做互斥键：复制出来的文件 name 不同，天然各跑各的。
+      group: ${{ github.workflow }}
+      # 新一轮顶掉上一轮（手动 Run workflow 也算），想中止就再点一次。
+      cancel-in-progress: true
     env:
+      # ── 凭据（③④ 每个账号改这里）──────────────────────────────────────
       ACC_LABEL: '账号4'
       ACC_EMAIL: ${{ secrets.ACC_EMAIL }}
       ACC_PASS: ${{ secrets.ACC_PASS }}
       ACC_SEED: ${{ secrets.ACC_SEED }}
-      STATE_FILE: 'state/acc4.json'
-      PROXY_NODE: ${{ secrets.PROXY_NODE }}
-      PROXY_SRC: ${{ secrets.PROXY_NODE && 'Secrets.PROXY_NODE' || '未配置（直连）' }}
-      ACTION: ${{ vars.ACTION || 'delay' }}
+      # ── 状态与仓库 ──────────────────────────────────────────────────
+      STATE_FILE: state/acc4.json
+      PROJECT_DIR: alishushu-core
+      TIME_DIR: acc/4                # ⑤ 每个账号一个目录
+      # ── 动作 ────────────────────────────────────────────────────────
+      ACTION: ${{ (inputs.phase == 'renew' && 'renew') || vars.ACTION || 'delay' }}
       EXTEND_CLICKS: ${{ inputs.clicks || vars.EXTEND_CLICKS || '1' }}
-      INSTANCE: ${{ inputs.instance || vars.INSTANCE }}
+      EXTEND_KEEP_HOURS: ${{ vars.EXTEND_KEEP_HOURS || '48' }}
+      INSTANCE: ${{ vars.INSTANCE }}
       RENEW_MONTHS: ${{ vars.RENEW_MONTHS || '1' }}
       SKIP_IF_DAYS_GT: ${{ vars.SKIP_IF_DAYS_GT || '30' }}
       MAX_COST: ${{ vars.MAX_COST || '0' }}
-      DRY: ${{ inputs.dry && '1' || '' }}
+      DRY: ${{ inputs.dry_run && '1' || '' }}
+      FORCE: ${{ inputs.force && '1' || '' }}
+      # ── 通知 / 代理 ─────────────────────────────────────────────────
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TG_CHAT: ${{ secrets.TG_CHAT }}
+      PROXY_NODE: ${{ secrets.PROXY_NODE }}
+      PROXY_PORT: '2080'
+
     steps:
-      - name: 配置预检
-        env:
-          E: ${{ secrets.ACC_EMAIL }}
-          P: ${{ secrets.PROXY_NODE }}
-        run: |
-          echo "账号已配：${E:+yes}${E:-NO}"
-          echo "代理节点长度：${#P}（0 = 直连）"
-          echo "状态文件：${{ env.STATE_FILE }}"
-          echo "动作：${{ env.ACTION }}（delay=免费延长 72 小时 / renew=花钱续费）"
-          echo "### 账号4 本次：动作=${{ env.ACTION }} 演练=${{ inputs.dry || '否' }}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 检查 CODE_REPO 变量
-        run: |
-          if [ -z "${{ vars.CODE_REPO }}" ]; then
-            echo "::error::本库没配仓库变量 CODE_REPO（应为 YYluck06/alishushu-renew-core），否则拉不到私有代码"; exit 1
-          fi
-
-      - name: 拉取私有代码库
+      - name: 检出公开仓库
         uses: actions/checkout@v4
-        with:
-          repository: ${{ vars.CODE_REPO }}
-          token: ${{ secrets.CODE_REPO_TOKEN }}
-          path: app
-          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - name: 检出私有仓库
+        env:
+          REPO_TOKEN: ${{ secrets.CODE_REPO_TOKEN }}
+          CODE_REPO: ${{ vars.CODE_REPO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CODE_REPO:-}" ]; then
+            echo "::error::本库没配仓库变量 CODE_REPO（应为 用户名/alishushu-renew-core），否则拉不到私有代码"
+            exit 1
+          fi
+          if [ -z "${REPO_TOKEN:-}" ]; then
+            echo "::error::没有 CODE_REPO_TOKEN，无法检出私有仓库"
+            exit 1
+          fi
+          echo "检出方式：CODE_REPO_TOKEN（HTTPS，token 走 header 不进 URL）"
+          auth=$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            clone --depth 1 "https://github.com/${CODE_REPO}.git" "$PROJECT_DIR"
+          git -C "$PROJECT_DIR" remote set-url origin "https://github.com/${CODE_REPO}.git"
+
+      - name: 校验凭据
+        id: check
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          for f in scripts/run-account.mjs scripts/setup-proxy.sh; do
+            [ -f "$f" ] || { echo "::error::私有库里没有 $f"; exit 1; }
+          done
+          echo "私有代码自检：run-account.mjs / setup-proxy.sh 都在"
+
+          for pair in "TG_TOKEN:Telegram报告" "PROXY_NODE:代理出口"; do
+            name="${pair%%:*}"; desc="${pair#*:}"
+            val="${!name:-}"
+            [ -n "$val" ] && echo "$name（$desc）  已配置" || echo "$name（$desc）  未配置"
+          done
+
+          if [ -z "${ACC_EMAIL:-}" ] || [ -z "${ACC_PASS:-}" ]; then
+            echo "没配账号凭据 → 本次只保活，不跑延长"
+            echo "has_creds=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_creds=true" >> "$GITHUB_OUTPUT"
+
+      - name: 设置 Node
+        if: steps.check.outputs.has_creds == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ env.PROJECT_DIR }}/package-lock.json
 
       - name: 安装依赖
-        working-directory: app
-        run: npm install --no-audit --no-fund
+        if: steps.check.outputs.has_creds == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
       - name: 安装浏览器（Chromium）
-        working-directory: app
+        if: steps.check.outputs.has_creds == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npx playwright install --with-deps chromium
 
       - name: 站点健康检查
-        working-directory: app
+        if: steps.check.outputs.has_creds == 'true' && inputs.phase != 'selftest'
+        working-directory: ${{ env.PROJECT_DIR }}
         run: node scripts/health.mjs
 
-      - name: 启动代理（本库专属出口）
-        working-directory: app
+      - name: 启动代理（本库专属出口 + 我们自己的 sing-box 配置）
+        if: steps.check.outputs.has_creds == 'true' && inputs.phase != 'selftest'
+        working-directory: ${{ env.PROJECT_DIR }}
         run: bash scripts/setup-proxy.sh
 
-      - name: 校准（手动勾选 discover 才跑）
-        if: ${{ inputs.discover }}
-        working-directory: app
-        run: node scripts/discover.mjs
+      - name: 代理隔离自测（假节点，不碰账号）
+        if: steps.check.outputs.has_creds == 'true' && inputs.phase == 'selftest'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sb
+          curl -fL --retry 3 --connect-timeout 15 -o /tmp/sb/sb.tgz \
+            https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz
+          tar -xzf /tmp/sb/sb.tgz -C /tmp/sb
+          SB_BIN=/tmp/sb/sing-box-1.13.14-linux-amd64/sing-box
+          chmod +x "$SB_BIN"
+          "$SB_BIN" version | head -1
+          SB_BIN="$SB_BIN" node scripts/selftest-proxy.mjs
 
-      - name: 延长/续期
-        if: ${{ !inputs.discover }}
-        working-directory: app
-        run: node scripts/run-account.mjs
+      - name: 随机延迟
+        if: steps.check.outputs.has_creds == 'true'
+        run: |
+          delay=$((RANDOM % 120))
+          echo "随机延迟: ${delay}秒（别每天都同一秒来）"
+          sleep $delay
+
+      - name: 运行
+        id: run
+        if: steps.check.outputs.has_creds == 'true' && inputs.phase != 'selftest'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.phase }}" = "discover" ]; then
+            CMD="node scripts/discover.mjs"
+          else
+            CMD="node scripts/run-account.mjs"
+          fi
+          echo "运行：$CMD"
+          echo "动作：${ACTION}（delay=免费延长 72 小时 / renew=花钱续费） 演练=${DRY:-否} 触发线=${EXTEND_KEEP_HOURS}h 点击=${EXTEND_CLICKS}"
+          echo "### 账号4 本次：动作=${ACTION} 演练=${DRY:-否}" >> "$GITHUB_STEP_SUMMARY"
+
+          # 不要用 node ... | tee log：管道里 $! 是 tee 的 PID，退出码永远是 0。
+          $CMD > run.log 2>&1 &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null; do
+            echo "[HEARTBEAT] 仍在运行: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            sleep 15
+          done
+          status=0
+          wait "$pid" || status=$?
+          echo "---- 退出码: ${status} ----"
+          tail -n 120 run.log || true
+          exit "$status"
 
       - name: 回写会话/指纹状态到私有库
-        if: always()
-        working-directory: app
+        if: always() && steps.check.outputs.has_creds == 'true' && inputs.phase != 'selftest'
+        working-directory: ${{ env.PROJECT_DIR }}
         env:
           CODE_REPO: ${{ vars.CODE_REPO }}
           CODE_REPO_TOKEN: ${{ secrets.CODE_REPO_TOKEN }}
           STATE_LABEL: '账号4'
         run: bash scripts/push-state.sh
 
-      - name: 上传排查产物（失败时）
-        if: failure()
+      - name: 上传日志
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: acc4-artifacts
-          path: app/artifacts
-          retention-days: 3
-          if-no-files-found: ignore
+          name: acc4-log-${{ github.run_id }}
+          path: |
+            ${{ env.PROJECT_DIR }}/run.log
+            ${{ env.PROJECT_DIR }}/artifacts
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 提交执行时间
+        if: always()
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 每次以最新 origin/main 为基准重建提交，避免并发 run 互相覆盖
+          for attempt in 1 2 3; do
+            echo "提交执行时间，第 ${attempt}/3 次尝试"
+            git fetch origin refs/heads/main:refs/remotes/origin/main
+            git reset --hard origin/main
+            mkdir -p "${{ env.TIME_DIR }}"
+            date +'%Y-%m-%d %H:%M:%S' > "${{ env.TIME_DIR }}/time.txt"
+            git add "${{ env.TIME_DIR }}/time.txt"
+            git commit -m "更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')" || exit 0
+            if git push origin HEAD:refs/heads/main; then
+              echo "执行时间已提交"
+              exit 0
+            fi
+            echo "推送发生并发冲突，重新获取远端后重试"
+            git reset --hard origin/main
+            sleep 2
+          done
+          echo "3 次推送均失败"
+          exit 1
+
+      - name: 🧹 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          current_run="${{ github.run_id }}"
+          my_workflow="${{ github.workflow }}"
+          cutoff_epoch=$(date -d '24 hours ago' +%s)
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --limit=100 \
+            --json databaseId,createdAt,status,workflowName \
+            --jq '.[] | [.databaseId, .createdAt, .status, .workflowName] | @tsv' 2>/dev/null)
+          [ -z "$runs" ] && { echo "没有找到可清理的运行记录"; exit 0; }
+          to_delete=$(while IFS=$'\t' read -r run_id created_at status wf_name; do
+            [ -z "$run_id" ] && continue
+            [ "$run_id" = "$current_run" ] && continue
+            [ "$wf_name" != "$my_workflow" ] && continue
+            [ "$status" != "completed" ] && continue
+            created_epoch=$(date -d "$created_at" +%s 2>/dev/null || echo 0)
+            [ "$created_epoch" -ge "$cutoff_epoch" ] && continue
+            echo "$run_id"
+          done <<< "$runs")
+          [ -z "$to_delete" ] && { echo "清理完成：没有超过 24 小时的已完成记录"; exit 0; }
+          echo "待删除 $(echo "$to_delete" | wc -l | tr -d ' ') 条超过 24 小时的已完成记录"
+          echo "$to_delete" | xargs -P 10 -I{} sh -c 'gh run delete "$1" --repo "$2" >/dev/null 2>&1 || true' _ {} "$GITHUB_REPOSITORY"
+          echo "清理完成：保留最近 24 小时记录及所有未完成记录"
 
       - name: 失败告警
         if: failure()
-        working-directory: app
-        run: node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号4 的延长/续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))"
-
-  # ── 2) 仓库保活：GitHub 会停用 60 天没活动的仓库的 cron ──
-  keepalive:
-    needs: [renew]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 更新时间戳并提交
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          date -u +"%Y-%m-%d %H:%M:%S UTC" > heartbeat.txt
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add heartbeat.txt
-          git commit -m "chore(keepalive): heartbeat $(date -u +'%Y-%m-%d')" || exit 0
-          git push
+          node -e "import('./scripts/tg.mjs').then(m=>m.send('⚠️ 账号4 的延长/续期 job 异常结束，请到 Actions 日志查看')).catch(e=>console.error(e.message))" || true
